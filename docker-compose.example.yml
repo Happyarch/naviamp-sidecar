@@ -1,0 +1,44 @@
+# Example Docker Compose setup that adds the naviamp-sidecar alongside an
+# existing Navidrome deployment. Copy this into your own docker-compose.yml
+# and adjust the volume paths to match your setup.
+#
+# The sidecar mounts the Navidrome data directory in read-only mode. It
+# accesses navidrome.db directly but never writes to it.
+#
+# After adding the sidecar, the Naviamp client will automatically detect it
+# on next startup and enable delta sync and performing-artist browse.
+
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    ports:
+      - "4533:4533"
+    volumes:
+      - ./data:/data
+      - ./music:/music:ro
+    environment:
+      ND_SCANSCHEDULE: "1h"
+      ND_LOGLEVEL: "info"
+
+  naviamp-sidecar:
+    image: ghcr.io/happyarch/naviamp-sidecar:latest
+    ports:
+      - "8090:8090"
+    environment:
+      # URL of the Navidrome container — used to verify client credentials.
+      # Use the Docker service name, not localhost, since they are on the same
+      # Docker network.
+      NAVIAMP_NAVIDROME_URL: "http://navidrome:4533"
+
+      # SQLite is the default Navidrome database for home deployments.
+      NAVIAMP_DB_TYPE: "sqlite"
+      NAVIAMP_DB_PATH: "/data/navidrome.db"
+
+      NAVIAMP_LISTEN: ":8090"
+    volumes:
+      # Read-only mount of the Navidrome data directory so the sidecar can
+      # open navidrome.db. The :ro flag prevents any accidental writes.
+      - ./data:/data:ro
+    depends_on:
+      - navidrome
+    restart: unless-stopped

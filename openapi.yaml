@@ -1,0 +1,446 @@
+openapi: "3.1.0"
+info:
+  title: naviamp-sidecar API
+  version: "1.0.0"
+  description: |
+    Read-only HTTP service that runs alongside a Navidrome music server and
+    exposes additional endpoints for the Naviamp client. Fills two gaps in the
+    standard OpenSubsonic protocol: delta sync and performing-artist track browse.
+
+    All endpoints require Subsonic token authentication (u/t/s parameters).
+    All responses use the Subsonic JSON envelope format.
+
+    Source: https://github.com/Happyarch/naviamp-sidecar
+
+servers:
+  - url: "http://localhost:8090"
+    description: Default local sidecar address
+
+paths:
+  /naviamp/capabilities:
+    get:
+      operationId: getCapabilities
+      summary: Probe — detect sidecar presence and retrieve feature list
+      description: |
+        The probe endpoint the client calls on startup to detect whether the
+        sidecar is running. A successful response (HTTP 200 + valid JSON body)
+        means the sidecar is present. Any other response means it is absent
+        and the client should fall back to standard OpenSubsonic behaviour.
+
+        The client should cache the result and NOT re-probe on every request.
+      parameters:
+        - $ref: "#/components/parameters/u"
+        - $ref: "#/components/parameters/t"
+        - $ref: "#/components/parameters/s"
+        - $ref: "#/components/parameters/v"
+        - $ref: "#/components/parameters/c"
+        - $ref: "#/components/parameters/f"
+      responses:
+        "200":
+          description: Sidecar present and credentials valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapabilitiesEnvelope"
+              example:
+                subsonic-response:
+                  status: ok
+                  version: "1.16.1"
+                  capabilities:
+                    version: "1.0.0"
+                    features: ["delta-sync", "performing-artists"]
+        "401":
+          $ref: "#/components/responses/AuthError"
+
+  /naviamp/changes:
+    get:
+      operationId: getChanges
+      summary: Delta sync — items changed since a timestamp
+      description: |
+        Returns IDs and updated timestamps for all artists, albums, and tracks
+        modified after the given Unix-millisecond timestamp, plus a list of
+        soft-deleted IDs to purge from the client's local cache.
+
+        If `since` is 0 or omitted, all items are returned (first-run full sync).
+
+        The client should fetch full metadata for returned IDs via the standard
+        Subsonic getArtist / getAlbum / getSong endpoints.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: |
+            Unix timestamp in milliseconds. Items modified strictly after this
+            time are included. Use 0 or omit for a full sync.
+          schema:
+            type: integer
+            format: int64
+            default: 0
+        - $ref: "#/components/parameters/u"
+        - $ref: "#/components/parameters/t"
+        - $ref: "#/components/parameters/s"
+        - $ref: "#/components/parameters/v"
+        - $ref: "#/components/parameters/c"
+        - $ref: "#/components/parameters/f"
+      responses:
+        "200":
+          description: Changed item IDs and deleted IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangesEnvelope"
+              example:
+                subsonic-response:
+                  status: ok
+                  version: "1.16.1"
+                  changes:
+                    artists:
+                      - id: "ar-abc123"
+                        updatedAt: 1716900000000
+                    albums:
+                      - id: "al-def456"
+                        updatedAt: 1716900000000
+                    songs:
+                      - id: "tr-ghi789"
+                        updatedAt: 1716900000000
+                    deletedIds: ["tr-old99"]
+        "400":
+          $ref: "#/components/responses/MissingParamError"
+        "401":
+          $ref: "#/components/responses/AuthError"
+
+  /naviamp/artistTracks:
+    get:
+      operationId: getArtistTracks
+      summary: All tracks where an artist appears as performing credit
+      description: |
+        Returns all tracks in media_file where `artist_id` matches the given
+        artist ID. This surfaces performing credits (guest appearances) that
+        the standard OpenSubsonic `getArtist` endpoint does not expose, because
+        `getArtist` only returns albums where the artist is the album artist
+        (`album_artist_id`).
+
+        Song objects match the OpenSubsonic Child schema so existing Child
+        parsing code works without modification.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: Navidrome artist ID (string, typically an MD5 hash)
+          schema:
+            type: string
+        - $ref: "#/components/parameters/u"
+        - $ref: "#/components/parameters/t"
+        - $ref: "#/components/parameters/s"
+        - $ref: "#/components/parameters/v"
+        - $ref: "#/components/parameters/c"
+        - $ref: "#/components/parameters/f"
+      responses:
+        "200":
+          description: Tracks where this artist is the performing credit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtistTracksEnvelope"
+              example:
+                subsonic-response:
+                  status: ok
+                  version: "1.16.1"
+                  artistTracks:
+                    song:
+                      - id: "tr-abc123"
+                        isDir: false
+                        title: "Track Title"
+                        album: "Album Name"
+                        artist: "Performing Artist"
+                        track: 3
+                        year: 2021
+                        duration: 245
+                        bitRate: 320
+                        coverArt: "al-coverId"
+                        albumId: "al-abc123"
+                        artistId: "ar-xyz"
+                        type: music
+                        mediaType: song
+        "400":
+          $ref: "#/components/responses/MissingParamError"
+        "401":
+          $ref: "#/components/responses/AuthError"
+
+components:
+  parameters:
+    u:
+      name: u
+      in: query
+      required: true
+      description: Navidrome username
+      schema:
+        type: string
+    t:
+      name: t
+      in: query
+      required: true
+      description: "MD5 token: md5(password + salt), hex-encoded lowercase"
+      schema:
+        type: string
+    s:
+      name: s
+      in: query
+      required: true
+      description: Random salt used to compute t (minimum 6 characters)
+      schema:
+        type: string
+        minLength: 6
+    v:
+      name: v
+      in: query
+      required: true
+      description: Subsonic protocol version — always "1.16.1"
+      schema:
+        type: string
+        default: "1.16.1"
+    c:
+      name: c
+      in: query
+      required: true
+      description: Client application name
+      schema:
+        type: string
+    f:
+      name: f
+      in: query
+      required: false
+      description: Response format — always "json" for sidecar requests
+      schema:
+        type: string
+        default: json
+        enum: [json]
+
+  schemas:
+    SubsonicEnvelope:
+      type: object
+      required: ["subsonic-response"]
+      properties:
+        subsonic-response:
+          type: object
+          required: [status, version]
+          properties:
+            status:
+              type: string
+              enum: [ok, failed]
+            version:
+              type: string
+              example: "1.16.1"
+            error:
+              $ref: "#/components/schemas/SubsonicError"
+
+    SubsonicError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          description: |
+            Subsonic error code:
+            10 = missing parameter
+            40 = wrong credentials
+            50 = not authorised
+            70 = not found
+        message:
+          type: string
+
+    ChangeEntry:
+      type: object
+      required: [id, updatedAt]
+      properties:
+        id:
+          type: string
+          description: Navidrome entity ID (string, typically MD5 hash)
+        updatedAt:
+          type: integer
+          format: int64
+          description: Modification timestamp in Unix milliseconds
+
+    Child:
+      type: object
+      description: |
+        OpenSubsonic Child schema track object. Matches the schema at
+        https://opensubsonic.netlify.app/docs/responses/child/ so that
+        existing Child-parsing code works without modification.
+      required: [id, isDir, title]
+      properties:
+        id:
+          type: string
+        isDir:
+          type: boolean
+          description: Always false for tracks
+        title:
+          type: string
+        album:
+          type: string
+        artist:
+          type: string
+        track:
+          type: integer
+        year:
+          type: integer
+        genre:
+          type: string
+        duration:
+          type: integer
+          description: Length in seconds
+        bitRate:
+          type: integer
+          description: Bitrate in kbps
+        bitDepth:
+          type: integer
+        samplingRate:
+          type: integer
+        channelCount:
+          type: integer
+        size:
+          type: integer
+          format: int64
+          description: File size in bytes
+        contentType:
+          type: string
+          description: MIME type, e.g. "audio/flac"
+        suffix:
+          type: string
+          description: File extension, e.g. "flac"
+        coverArt:
+          type: string
+          description: Navidrome artwork ID — pass to /rest/getCoverArt.view
+        albumId:
+          type: string
+        artistId:
+          type: string
+        playCount:
+          type: integer
+          format: int64
+        starred:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp if user has starred this track
+        type:
+          type: string
+          description: Always "music" for tracks returned by artistTracks
+        mediaType:
+          type: string
+          description: Always "song" for tracks returned by artistTracks
+        musicBrainzId:
+          type: string
+
+    CapabilitiesResponse:
+      type: object
+      required: [version, features]
+      properties:
+        version:
+          type: string
+          description: Sidecar semantic version (not Subsonic protocol version)
+          example: "1.0.0"
+        features:
+          type: array
+          items:
+            type: string
+          description: |
+            Capability tokens. Clients must use exact string equality:
+            "delta-sync"         → GET /naviamp/changes available
+            "performing-artists" → GET /naviamp/artistTracks available
+          example: ["delta-sync", "performing-artists"]
+
+    ChangesResponse:
+      type: object
+      required: [artists, albums, songs, deletedIds]
+      properties:
+        artists:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChangeEntry"
+        albums:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChangeEntry"
+        songs:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChangeEntry"
+        deletedIds:
+          type: array
+          items:
+            type: string
+          description: |
+            Navidrome IDs soft-deleted after the requested since timestamp.
+            Remove these from the local client cache without fetching them.
+
+    ArtistTracksResponse:
+      type: object
+      required: [song]
+      properties:
+        song:
+          type: array
+          items:
+            $ref: "#/components/schemas/Child"
+          description: Empty array when artist has no performing credits
+
+    CapabilitiesEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SubsonicEnvelope"
+        - type: object
+          properties:
+            subsonic-response:
+              type: object
+              properties:
+                capabilities:
+                  $ref: "#/components/schemas/CapabilitiesResponse"
+
+    ChangesEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SubsonicEnvelope"
+        - type: object
+          properties:
+            subsonic-response:
+              type: object
+              properties:
+                changes:
+                  $ref: "#/components/schemas/ChangesResponse"
+
+    ArtistTracksEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SubsonicEnvelope"
+        - type: object
+          properties:
+            subsonic-response:
+              type: object
+              properties:
+                artistTracks:
+                  $ref: "#/components/schemas/ArtistTracksResponse"
+
+  responses:
+    AuthError:
+      description: Authentication failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SubsonicEnvelope"
+          example:
+            subsonic-response:
+              status: failed
+              version: "1.16.1"
+              error:
+                code: 40
+                message: "Wrong username or password."
+
+    MissingParamError:
+      description: Required parameter missing or malformed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SubsonicEnvelope"
+          example:
+            subsonic-response:
+              status: failed
+              version: "1.16.1"
+              error:
+                code: 10
+                message: "Required parameter is missing."
