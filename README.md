@@ -131,9 +131,14 @@ location / {
 
 ```
 # Caddy (standalone, with automatic HTTPS)
+# Use handle, not handle_path — the sidecar expects the /naviamp prefix intact.
 music.example.com {
-    reverse_proxy /naviamp/* localhost:8090
-    reverse_proxy * localhost:4533
+    handle /naviamp* {
+        reverse_proxy localhost:8090
+    }
+    handle /* {
+        reverse_proxy localhost:4533
+    }
 }
 ```
 

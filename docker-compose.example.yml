@@ -28,8 +28,7 @@ services:
   caddy:
     image: caddy:2-alpine
     ports:
-      - "80:80"
-      - "443:443"
+      - "4533:4533"   # change to 80/443 if using a domain with HTTPS
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Caddy stores TLS certificates here — persist so they survive restarts.
