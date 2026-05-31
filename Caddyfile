@@ -1,0 +1,34 @@
+# Caddyfile for naviamp-sidecar + Navidrome
+#
+# Caddy sits in front of both containers and routes by URL path:
+#   /naviamp/*  →  naviamp-sidecar:8090
+#   everything  →  navidrome:4533
+#
+# This means clients only need one address. The Naviamp app probes
+# <serverUrl>/naviamp/capabilities on startup — with Caddy in front,
+# that probe reaches the sidecar automatically with no extra configuration
+# on the client side.
+#
+# Caddy evaluates matchers top-to-bottom; the first match wins.
+# The two reverse_proxy lines below are all that's needed — no regex.
+#
+# ── Local / no domain ────────────────────────────────────────────────────────
+# Use this block if you're running on a local network without a domain name.
+# Caddy serves plain HTTP on port 80.
+
+:80 {
+    reverse_proxy /naviamp/* naviamp-sidecar:8090
+    reverse_proxy * navidrome:4533
+}
+
+# ── Public domain with automatic HTTPS ───────────────────────────────────────
+# Uncomment this block (and remove the :80 block above) if you have a domain
+# name pointing at this server. Caddy obtains and renews a Let's Encrypt TLS
+# certificate automatically — no certbot, no manual renewal.
+#
+# Replace "music.example.com" with your actual domain.
+#
+# music.example.com {
+#     reverse_proxy /naviamp/* naviamp-sidecar:8090
+#     reverse_proxy * navidrome:4533
+# }

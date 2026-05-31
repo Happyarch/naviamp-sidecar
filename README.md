@@ -28,10 +28,33 @@ export NAVIAMP_DB_PATH=/var/lib/navidrome/navidrome.db
 ./naviamp-sidecar
 ```
 
-### Docker Compose
+### Docker Compose (with Caddy)
 
-Copy `docker-compose.example.yml` into your Navidrome deployment and adjust
-the volume paths. The sidecar mounts the Navidrome data directory read-only.
+The example Compose file includes a [Caddy](https://caddyserver.com/) reverse
+proxy that routes both Navidrome and the sidecar through a single port. This
+is the recommended setup because the Naviamp client probes
+`<serverUrl>/naviamp/capabilities` to detect the sidecar — if Navidrome and
+the sidecar are on separate ports, the probe never reaches the sidecar.
+
+```
+Client (Naviamp app)
+    │
+    ▼  port 80 (or 443 with a domain)
+[Caddy]  ── /naviamp/* ──▶  [naviamp-sidecar]
+    │
+    └── everything else ──▶  [Navidrome]
+```
+
+1. Copy `docker-compose.example.yml` → `docker-compose.yml`
+2. Copy `Caddyfile` to the same directory
+3. Adjust the `./data` and `./music` volume paths to match your setup
+4. If you have a domain, swap the Caddyfile to the HTTPS block (Caddy handles
+   Let's Encrypt automatically — no certbot needed)
+5. `docker compose up -d`
+
+Point the Naviamp app at `http://<your-server-ip>` (or `https://music.example.com`).
+The sidecar is detected automatically on the same address — no separate port
+or URL needed.
 
 ## Configuration
 
@@ -65,7 +88,7 @@ NAVIAMP_DB_DSN=navidrome:pass@tcp(localhost:3306)/navidrome?parseTime=true
 
 ## Building from source
 
-Requires Go 1.22+. No CGO needed (uses a pure-Go SQLite driver).
+Requires Go 1.26+. No CGO needed (uses a pure-Go SQLite driver).
 
 ```bash
 go build -o naviamp-sidecar ./cmd/naviamp-sidecar
@@ -93,11 +116,11 @@ client implementations, see [API.md — Client detection](API.md#client-detectio
 
 ## Reverse proxy setup
 
-To expose both Navidrome and the sidecar at the same public hostname, route by
-path prefix in your reverse proxy:
+The included `Caddyfile` handles this automatically in the Docker Compose setup.
+If you have an existing reverse proxy, apply the same routing rules:
 
 ```nginx
-# nginx example
+# nginx
 location /naviamp/ {
     proxy_pass http://localhost:8090;
 }
@@ -107,16 +130,22 @@ location / {
 ```
 
 ```
-# Caddy example
-example.com {
-    handle /naviamp/* {
-        reverse_proxy localhost:8090
-    }
-    handle {
-        reverse_proxy localhost:4533
-    }
+# Caddy (standalone, with automatic HTTPS)
+music.example.com {
+    reverse_proxy /naviamp/* localhost:8090
+    reverse_proxy * localhost:4533
 }
 ```
+
+```yaml
+# Traefik (Docker labels on each service)
+# navidrome: traefik.http.routers.nd.rule=PathPrefix(`/`)
+# naviamp-sidecar: traefik.http.routers.sidecar.rule=PathPrefix(`/naviamp`)
+#                  traefik.http.routers.sidecar.priority=10
+```
+
+The routing rule is always the same: `/naviamp/*` goes to the sidecar,
+everything else goes to Navidrome.
 
 ## Security
 

@@ -1,44 +1,71 @@
-# Example Docker Compose setup that adds the naviamp-sidecar alongside an
-# existing Navidrome deployment. Copy this into your own docker-compose.yml
-# and adjust the volume paths to match your setup.
+# Example Docker Compose setup for Navidrome + naviamp-sidecar + Caddy.
 #
-# The sidecar mounts the Navidrome data directory in read-only mode. It
-# accesses navidrome.db directly but never writes to it.
+# Architecture
+# ────────────
+#   Client (Naviamp app)
+#       │
+#       ▼  port 80 (or 443 with a domain — see Caddyfile)
+#   [caddy]  ── /naviamp/* ──▶  [naviamp-sidecar]  ── read-only ──▶  navidrome.db
+#       │
+#       └── everything else ──▶  [navidrome]
 #
-# After adding the sidecar, the Naviamp client will automatically detect it
-# on next startup and enable delta sync and performing-artist browse.
+# Caddy is the only container that exposes ports to the outside world.
+# Navidrome and the sidecar are on the internal Docker network only —
+# clients cannot reach them directly.
+#
+# Usage
+# ─────
+# 1. Copy this file to docker-compose.yml in your Navidrome directory.
+# 2. Copy Caddyfile to the same directory.
+# 3. Adjust the volume paths (./data, ./music) to match your setup.
+# 4. If you have a domain, edit Caddyfile to use the HTTPS block.
+# 5. docker compose up -d
+#
+# Point the Naviamp app at http://<your-server-ip> (or https://music.example.com).
+# The app will probe /naviamp/capabilities automatically and enable sidecar features.
 
 services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Caddy stores TLS certificates here — persist so they survive restarts.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - navidrome
+      - naviamp-sidecar
+    restart: unless-stopped
+
   navidrome:
     image: deluan/navidrome:latest
-    ports:
-      - "4533:4533"
+    # No ports: exposed — Navidrome is only reachable via Caddy on the internal network.
     volumes:
       - ./data:/data
       - ./music:/music:ro
     environment:
       ND_SCANSCHEDULE: "1h"
       ND_LOGLEVEL: "info"
+    restart: unless-stopped
 
   naviamp-sidecar:
     image: ghcr.io/happyarch/naviamp-sidecar:latest
-    ports:
-      - "8090:8090"
+    # No ports: exposed — the sidecar is only reachable via Caddy on the internal network.
     environment:
-      # URL of the Navidrome container — used to verify client credentials.
-      # Use the Docker service name, not localhost, since they are on the same
-      # Docker network.
+      # Navidrome is reachable by its service name on the Docker network.
       NAVIAMP_NAVIDROME_URL: "http://navidrome:4533"
-
-      # SQLite is the default Navidrome database for home deployments.
       NAVIAMP_DB_TYPE: "sqlite"
       NAVIAMP_DB_PATH: "/data/navidrome.db"
-
-      NAVIAMP_LISTEN: ":8090"
     volumes:
-      # Read-only mount of the Navidrome data directory so the sidecar can
-      # open navidrome.db. The :ro flag prevents any accidental writes.
+      # Read-only mount — the sidecar reads navidrome.db but never writes to it.
       - ./data:/data:ro
     depends_on:
       - navidrome
     restart: unless-stopped
+
+volumes:
+  caddy_data:   # TLS certificates — persisted across container restarts
+  caddy_config: # Caddy runtime config
