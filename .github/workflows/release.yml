@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write      # create GitHub Releases and upload binary assets
+  packages: write      # push to ghcr.io
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Go binary — build a static Linux amd64 binary with no CGO so the
+      # Docker image can use scratch and the binary can run on any Linux host.
+      # -----------------------------------------------------------------------
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build static binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -trimpath -o naviamp-sidecar ./cmd/naviamp-sidecar
+
+      - name: Run tests
+        run: go test ./...
+
+      # -----------------------------------------------------------------------
+      # Docker image — multi-platform build pushed to GitHub Container Registry.
+      # Tag strategy:
+      #   push to main            → ghcr.io/…:latest
+      #   push of tag v1.2.3      → ghcr.io/…:1.2.3  AND  ghcr.io/…:latest
+      # -----------------------------------------------------------------------
+      - name: Set up QEMU (for multi-platform builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            # Tag with the semver version on a version tag push (v1.2.3 → 1.2.3)
+            type=semver,pattern={{version}}
+            # Also tag as latest on any push to main or a version tag
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # -----------------------------------------------------------------------
+      # GitHub Release — only created on version tag pushes (v*.*.*).
+      # Attaches the static binary so users can download and run without Docker.
+      # -----------------------------------------------------------------------
+      - name: Create GitHub Release with binary
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: naviamp-sidecar
+          body: |
+            ## Docker
+
+            ```bash
+            docker pull ghcr.io/happyarch/naviamp-sidecar:${{ github.ref_name }}
+            ```
+
+            See [docker-compose.example.yml](https://github.com/${{ github.repository }}/blob/main/docker-compose.example.yml)
+            for a drop-in Compose snippet.
+
+            ## Binary (Linux amd64)
+
+            Download `naviamp-sidecar` below, make it executable, and run:
+
+            ```bash
+            chmod +x naviamp-sidecar
+            export NAVIAMP_NAVIDROME_URL=http://localhost:4533
+            export NAVIAMP_DB_PATH=/var/lib/navidrome/navidrome.db
+            ./naviamp-sidecar
+            ```
+
+            See [API.md](https://github.com/${{ github.repository }}/blob/main/API.md)
+            for the full client integration reference.
